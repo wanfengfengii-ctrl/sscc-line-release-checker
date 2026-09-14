@@ -57,6 +57,7 @@ describe('evaluateLine', () => {
       status: 'ok',
       received: 5,
       computed: 5,
+      duplicateOf: null,
     });
   });
 
@@ -80,6 +81,7 @@ describe('evaluateLine', () => {
       status: 'format-error',
       received: null,
       computed: null,
+      duplicateOf: null,
     });
   });
 });
@@ -124,5 +126,87 @@ describe('evaluateBatch', () => {
   it('全部非空行合格时才放行', () => {
     expect(evaluateBatch('123456789012345675\n006141411234567890').canRelease).toBe(true);
     expect(evaluateBatch('123456789012345675\n006141411234567891').canRelease).toBe(false);
+  });
+});
+
+describe('evaluateBatch：批内重复识别', () => {
+  it('批内全部唯一时照常放行，重复计数为 0', () => {
+    const result = evaluateBatch('123456789012345675\n006141411234567890\n000000000000000000');
+    expect(result.canRelease).toBe(true);
+    expect(result.duplicateCount).toBe(0);
+    expect(result.lines.every((line) => line.status === 'ok')).toBe(true);
+  });
+
+  it('前导零 SSCC 重复：首次保留通过，后续标记重复并记录首次出现的原始行号', () => {
+    const result = evaluateBatch('006141411234567890\n006141411234567890');
+    expect(result.canRelease).toBe(false);
+    expect(result.duplicateCount).toBe(1);
+    expect(result.firstProblemLine).toBe(2);
+    expect(result.lines[0]).toMatchObject({ lineNumber: 1, status: 'ok', duplicateOf: null });
+    expect(result.lines[1]).toMatchObject({ lineNumber: 2, status: 'duplicate', duplicateOf: 1 });
+    // 重复判定基于字符串原值，前导零原样保留
+    expect(result.lines[1].raw.startsWith('00')).toBe(true);
+  });
+
+  it('重复判定按字符串原值比较：校验位不同的相似值不算重复', () => {
+    const result = evaluateBatch('006141411234567890\n006141411234567891');
+    expect(result.lines.map((line) => line.status)).toEqual(['ok', 'check-error']);
+    expect(result.duplicateCount).toBe(0);
+  });
+
+  it('跨空行重复仍被识别，行号按原始输入计', () => {
+    const result = evaluateBatch('123456789012345675\n\n\n123456789012345675\n');
+    expect(result.lines.map((line) => line.lineNumber)).toEqual([1, 4]);
+    expect(result.lines[1]).toMatchObject({ status: 'duplicate', duplicateOf: 1 });
+    expect(result.firstProblemLine).toBe(4);
+    expect(result.duplicateCount).toBe(1);
+    expect(result.canRelease).toBe(false);
+  });
+
+  it('同一值出现三次：后两次均为重复且都指向首次出现行号', () => {
+    const result = evaluateBatch(
+      '123456789012345675\n123456789012345675\n123456789012345675',
+    );
+    expect(result.lines.map((line) => line.status)).toEqual(['ok', 'duplicate', 'duplicate']);
+    expect(result.lines[1].duplicateOf).toBe(1);
+    expect(result.lines[2].duplicateOf).toBe(1);
+    expect(result.duplicateCount).toBe(2);
+  });
+
+  it('格式错误行即使原文相同也保留格式错误，不改写为重复', () => {
+    const result = evaluateBatch('12345\n12345');
+    expect(result.lines.map((line) => line.status)).toEqual(['format-error', 'format-error']);
+    expect(result.duplicateCount).toBe(0);
+    expect(result.firstProblemLine).toBe(1);
+  });
+
+  it('校验位错误行即使原文相同也保留校验位错误，不改写为重复', () => {
+    const result = evaluateBatch('006141411234567891\n006141411234567891');
+    expect(result.lines.map((line) => line.status)).toEqual(['check-error', 'check-error']);
+    expect(result.lines.every((line) => line.duplicateOf === null)).toBe(true);
+    expect(result.duplicateCount).toBe(0);
+  });
+
+  it('混合错误：重复与格式/校验错误并存时首个问题行按输入顺序确定', () => {
+    // 校验错误在第 2 行，重复在第 4 行 → 首个问题行为 2
+    const result = evaluateBatch(
+      '123456789012345675\n006141411234567891\n006141411234567890\n123456789012345675',
+    );
+    expect(result.lines.map((line) => line.status)).toEqual([
+      'ok',
+      'check-error',
+      'ok',
+      'duplicate',
+    ]);
+    expect(result.lines[3].duplicateOf).toBe(1);
+    expect(result.firstProblemLine).toBe(2);
+    expect(result.duplicateCount).toBe(1);
+    expect(result.canRelease).toBe(false);
+  });
+
+  it('重复行本身可成为首个问题行并阻断整批', () => {
+    const result = evaluateBatch('123456789012345675\n123456789012345675\n12345');
+    expect(result.firstProblemLine).toBe(2);
+    expect(result.canRelease).toBe(false);
   });
 });

@@ -96,3 +96,35 @@ test('逐行粘贴多条 SSCC 的真实批量流程', async ({ page }) => {
   await expect(page.getByTestId('verdict')).toContainText('全部 3 行校验通过');
   await expect(page.getByTestId('verdict')).toContainText('可送上传送带');
 });
+
+test('批内重复：整批阻断、汇总重复行数并聚焦首个重复行', async ({ page }) => {
+  await page.getByTestId('sscc-input').fill(`${VALID_A}\n\n${VALID_A}`);
+  await page.getByTestId('submit').click();
+
+  await expect(page.getByTestId('verdict')).toHaveAttribute('data-state', 'blocked');
+  await expect(page.getByTestId('verdict')).toContainText('整批阻断');
+  await expect(page.getByTestId('verdict')).toContainText('批内重复 1 行');
+
+  // 首次出现保留通过，跨空行的重复行显示“与第 N 行重复”并被聚焦
+  await expect(page.getByTestId('row-1')).toContainText('通过');
+  const row3 = page.getByTestId('row-3');
+  await expect(row3).toContainText('与第 1 行重复');
+  await expect(row3).toBeFocused();
+});
+
+test('重复批次修正重复项后恢复放行', async ({ page }) => {
+  await page.getByTestId('sscc-input').fill(`${VALID_A}\n${VALID_A}`);
+  await page.getByTestId('submit').click();
+  await expect(page.getByTestId('verdict')).toHaveAttribute('data-state', 'blocked');
+  await expect(page.getByTestId('row-2')).toContainText('与第 1 行重复');
+
+  // 修改输入立即清除旧结论
+  await page.getByTestId('sscc-input').fill(`${VALID_A}\n${VALID_B}`);
+  await expect(page.getByTestId('verdict')).toHaveCount(0);
+
+  // 重新提交只反映当前文本：重复项已修正，整批放行
+  await page.getByTestId('submit').click();
+  await expect(page.getByTestId('verdict')).toHaveAttribute('data-state', 'released');
+  await expect(page.getByTestId('row-1')).toContainText('通过');
+  await expect(page.getByTestId('row-2')).toContainText('通过');
+});

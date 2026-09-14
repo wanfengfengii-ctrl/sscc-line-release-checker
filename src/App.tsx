@@ -5,6 +5,7 @@ const STATUS_LABEL: Record<LineResult['status'], string> = {
   ok: '通过',
   'format-error': '格式错误：须为恰好 18 个数字',
   'check-error': '校验位不符',
+  duplicate: '重复',
 };
 
 function Verdict({ result }: { result: BatchResult }) {
@@ -24,7 +25,8 @@ function Verdict({ result }: { result: BatchResult }) {
         role="alert"
         className="verdict verdict-blocked"
       >
-        整批阻断：{failed} 行未通过，已聚焦首个问题行（第 {result.firstProblemLine} 行），禁止放行。
+        整批阻断：{failed} 行未通过（批内重复 {result.duplicateCount} 行），已聚焦首个问题行（第{' '}
+        {result.firstProblemLine} 行），禁止放行。
       </p>
     );
   }
@@ -47,7 +49,9 @@ function ResultRow({
   const statusText =
     line.status === 'check-error'
       ? `校验位不符：实收 ${line.received}，应为 ${line.computed}`
-      : STATUS_LABEL[line.status];
+      : line.status === 'duplicate'
+        ? `与第 ${line.duplicateOf} 行重复`
+        : STATUS_LABEL[line.status];
   return (
     <tr
       data-testid={`row-${line.lineNumber}`}

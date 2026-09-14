@@ -123,7 +123,8 @@ tr[data-status='ok'] td {
 }
 
 tr[data-status='format-error'] td,
-tr[data-status='check-error'] td {
+tr[data-status='check-error'] td,
+tr[data-status='duplicate'] td {
   background: #fdf3f3;
 }
 
