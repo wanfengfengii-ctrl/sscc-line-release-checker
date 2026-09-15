@@ -1,5 +1,12 @@
-import { FormEvent, RefObject, useEffect, useRef, useState } from 'react';
+import { FormEvent, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  buildProblemCursor,
+  firstProblemIndex,
+  nextProblemIndex,
+  prevProblemIndex,
+} from './problems';
 import { BatchResult, LineResult, evaluateBatch } from './sscc';
+import { useFocusMountedRow, useRowWindow } from './windowing';
 
 const STATUS_LABEL: Record<LineResult['status'], string> = {
   ok: '通过',
@@ -7,6 +14,16 @@ const STATUS_LABEL: Record<LineResult['status'], string> = {
   'check-error': '校验位不符',
   duplicate: '重复',
 };
+
+function statusText(line: LineResult): string {
+  if (line.status === 'check-error') {
+    return `校验位不符：实收 ${line.received}，应为 ${line.computed}`;
+  }
+  if (line.status === 'duplicate') {
+    return `与第 ${line.duplicateOf} 行重复`;
+  }
+  return STATUS_LABEL[line.status];
+}
 
 function Verdict({ result }: { result: BatchResult }) {
   if (!result.hasLines) {
@@ -39,26 +56,22 @@ function Verdict({ result }: { result: BatchResult }) {
 
 function ResultRow({
   line,
-  isFirstProblem,
-  problemRef,
+  isCurrentProblem,
+  registerRow,
 }: {
   line: LineResult;
-  isFirstProblem: boolean;
-  problemRef: RefObject<HTMLTableRowElement>;
+  isCurrentProblem: boolean;
+  registerRow: (lineNumber: number, node: HTMLTableRowElement | null) => void;
 }) {
-  const statusText =
-    line.status === 'check-error'
-      ? `校验位不符：实收 ${line.received}，应为 ${line.computed}`
-      : line.status === 'duplicate'
-        ? `与第 ${line.duplicateOf} 行重复`
-        : STATUS_LABEL[line.status];
   return (
     <tr
       data-testid={`row-${line.lineNumber}`}
+      data-row-index=""
       data-status={line.status}
-      ref={isFirstProblem ? problemRef : undefined}
-      tabIndex={isFirstProblem ? -1 : undefined}
-      className={isFirstProblem ? 'first-problem' : undefined}
+      data-current-problem={isCurrentProblem ? '' : undefined}
+      ref={(node) => registerRow(line.lineNumber, node)}
+      tabIndex={isCurrentProblem ? -1 : undefined}
+      className={isCurrentProblem ? 'current-problem' : undefined}
     >
       <td>{line.lineNumber}</td>
       <td>
@@ -66,7 +79,16 @@ function ResultRow({
       </td>
       <td data-testid="received">{line.received ?? '—'}</td>
       <td data-testid="computed">{line.computed ?? '—'}</td>
-      <td>{statusText}</td>
+      <td>{statusText(line)}</td>
+    </tr>
+  );
+}
+
+/** 填充行：不承载数据，只在 tbody 内撑起已虚拟化部分的高度。 */
+function SpacerRow({ height }: { height: number }) {
+  return (
+    <tr aria-hidden="true" data-testid="spacer">
+      <td colSpan={5} style={{ height, padding: 0, border: 'none' }} />
     </tr>
   );
 }
@@ -74,22 +96,87 @@ function ResultRow({
 export default function App() {
   const [input, setInput] = useState('');
   const [result, setResult] = useState<BatchResult | null>(null);
-  const firstProblemRef = useRef<HTMLTableRowElement>(null);
+  // 每次提交一个新值，窗口据此回到顶部；输入修改时结果整体卸载，游标同步清除
+  const [batchSeq, setBatchSeq] = useState(0);
+  // 当前问题在问题序列中的序号（0 基）；null 表示没有待处理问题
+  const [problemPos, setProblemPos] = useState<number | null>(null);
 
-  // 提交后若存在未通过行，把焦点移到首个问题行
-  useEffect(() => {
-    firstProblemRef.current?.focus();
+  const rowRefs = useRef(new Map<number, HTMLTableRowElement>());
+
+  // 领域结果仍保存全部非空行及原始行号；汇总与放行结论均基于完整批次
+  const cursor = useMemo(() => (result ? buildProblemCursor(result) : null), [result]);
+  // 原始行号 -> 结果数组下标。空行造成的行号间隔不能直接换算，滚动坐标走此映射
+  const arrayIndexByLine = useMemo(() => {
+    const map = new Map<number, number>();
+    result?.lines.forEach((line, index) => map.set(line.lineNumber, index));
+    return map;
   }, [result]);
+
+  const { containerRef, rowWindow, scrollToIndex } = useRowWindow(
+    result?.lines.length ?? 0,
+    batchSeq,
+  );
+
+  const currentProblemLine =
+    cursor && problemPos !== null ? (cursor.problems[problemPos]?.lineNumber ?? null) : null;
+
+  // 新批次提交后，首个失败行可能在视口之外（前面有大量合格行），先滚动再由补焦效应聚焦
+  useLayoutEffect(() => {
+    if (!cursor || cursor.problems.length === 0) {
+      return;
+    }
+    const firstLine = cursor.problems[0].lineNumber;
+    const arrayIndex = arrayIndexByLine.get(firstLine);
+    if (arrayIndex !== undefined) {
+      scrollToIndex(arrayIndex);
+    }
+    // 仅在新批次提交时执行，浏览过程中点击“上一个/下一个问题”由 jumpToProblem 负责
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [batchSeq]);
+
+  useFocusMountedRow(rowRefs, currentProblemLine, rowWindow.startIndex, rowWindow.endIndex);
+
+  function registerRow(lineNumber: number, node: HTMLTableRowElement | null) {
+    if (node) {
+      rowRefs.current.set(lineNumber, node);
+    } else {
+      rowRefs.current.delete(lineNumber);
+    }
+  }
+
+  function jumpToProblem(nextPos: number | null) {
+    if (!cursor || nextPos === null) {
+      return;
+    }
+    setProblemPos(nextPos);
+    // 问题行可能尚未挂载：先按输入位置滚动，挂载后由 useFocusMountedRow 补焦
+    const lineNumber = cursor.problems[nextPos].lineNumber;
+    const arrayIndex = arrayIndexByLine.get(lineNumber);
+    if (arrayIndex !== undefined) {
+      scrollToIndex(arrayIndex);
+    }
+  }
 
   function handleChange(value: string) {
     setInput(value);
-    setResult(null); // 输入改变，立即清除旧结论
+    setResult(null); // 输入改变，立即清除结果、窗口位置与问题游标
+    setProblemPos(null);
   }
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    setResult(evaluateBatch(input)); // 只保留当前批次的完整结果
+    const batch = evaluateBatch(input);
+    setResult(batch);
+    setBatchSeq((seq) => seq + 1);
+    const initial = buildProblemCursor(batch);
+    setProblemPos(firstProblemIndex(initial)); // 阻断后游标从首个失败行开始
   }
+
+  const hasProblems = (cursor?.problems.length ?? 0) > 0;
+  const atFirst = problemPos === null || problemPos === 0;
+  const atLast = cursor === null || problemPos === null || problemPos >= cursor.problems.length - 1;
+  const mountedLines =
+    result && cursor ? result.lines.slice(rowWindow.startIndex, rowWindow.endIndex) : [];
 
   return (
     <main className="page">
@@ -113,31 +200,70 @@ export default function App() {
         </button>
       </form>
 
-      {result && (
+      {result && cursor && (
         <section aria-live="polite">
           <Verdict result={result} />
+
+          {result.hasLines && (
+            <div className="problem-nav" data-testid="problem-nav">
+              <button
+                type="button"
+                className="nav-button"
+                data-testid="prev-problem"
+                disabled={!hasProblems || atFirst}
+                onClick={() =>
+                  problemPos !== null && jumpToProblem(prevProblemIndex(cursor, problemPos))
+                }
+              >
+                上一个问题
+              </button>
+              <button
+                type="button"
+                className="nav-button"
+                data-testid="next-problem"
+                disabled={!hasProblems || atLast}
+                onClick={() =>
+                  problemPos !== null && jumpToProblem(nextProblemIndex(cursor, problemPos))
+                }
+              >
+                下一个问题
+              </button>
+              <span data-testid="problem-position" className="problem-position">
+                {hasProblems && problemPos !== null
+                  ? `问题 ${problemPos + 1} / ${cursor.problems.length}（第 ${cursor.problems[problemPos].lineNumber} 行）`
+                  : '无待处理问题'}
+              </span>
+            </div>
+          )}
+
           {result.lines.length > 0 && (
-            <table>
-              <thead>
-                <tr>
-                  <th>行号</th>
-                  <th>SSCC</th>
-                  <th>实收校验位</th>
-                  <th>计算校验位</th>
-                  <th>状态</th>
-                </tr>
-              </thead>
-              <tbody>
-                {result.lines.map((line) => (
-                  <ResultRow
-                    key={line.lineNumber}
-                    line={line}
-                    isFirstProblem={line.lineNumber === result.firstProblemLine}
-                    problemRef={firstProblemRef}
-                  />
-                ))}
-              </tbody>
-            </table>
+            <div className="table-scroll" data-testid="table-scroll" ref={containerRef}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>行号</th>
+                    <th>SSCC</th>
+                    <th>实收校验位</th>
+                    <th>计算校验位</th>
+                    <th>状态</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rowWindow.topSpacerHeight > 0 && <SpacerRow height={rowWindow.topSpacerHeight} />}
+                  {mountedLines.map((line) => (
+                    <ResultRow
+                      key={line.lineNumber}
+                      line={line}
+                      isCurrentProblem={line.lineNumber === currentProblemLine}
+                      registerRow={registerRow}
+                    />
+                  ))}
+                  {rowWindow.bottomSpacerHeight > 0 && (
+                    <SpacerRow height={rowWindow.bottomSpacerHeight} />
+                  )}
+                </tbody>
+              </table>
+            </div>
           )}
         </section>
       )}

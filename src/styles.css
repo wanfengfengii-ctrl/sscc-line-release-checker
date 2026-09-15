@@ -69,8 +69,48 @@ button:hover {
   background: #255ccf;
 }
 
+button:disabled {
+  background: #aeb9c6;
+  cursor: not-allowed;
+}
+
 section {
   margin-top: 24px;
+}
+
+.problem-nav {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 12px;
+}
+
+.nav-button {
+  padding: 7px 14px;
+  font-size: 0.9rem;
+}
+
+.problem-position {
+  font-size: 0.9rem;
+  color: #45566a;
+}
+
+/* 窗口化明细的滚动视口：表头吸顶，只有视口加缓冲区的数据行会被挂载 */
+.table-scroll {
+  max-height: 600px;
+  overflow-y: auto;
+  border: 1px solid #d5dde4;
+  background: #fff;
+}
+
+.table-scroll table {
+  border: none;
+}
+
+.table-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 
 .verdict {
@@ -128,12 +168,12 @@ tr[data-status='duplicate'] td {
   background: #fdf3f3;
 }
 
-tr.first-problem td {
+tr.current-problem td {
   background: #ffe9e9;
   font-weight: 600;
 }
 
-tr.first-problem:focus {
+tr.current-problem:focus {
   outline: 3px solid #d33;
   outline-offset: -3px;
 }
